@@ -1,10 +1,17 @@
 import json
 import math
+import copy
 
 class SystemBlockViz:
     def __init__(self, json_data):
         self.data = json_data if isinstance(json_data, dict) else json.loads(json_data)
         self.ensure_structure()
+
+    def clone_data(self):
+        return copy.deepcopy(self.data)
+
+    def restore_data(self, old_data):
+        self.data = old_data
 
     def ensure_structure(self):
         if "components" not in self.data: self.data["components"] = {}
@@ -12,7 +19,6 @@ class SystemBlockViz:
         if "connections" not in self.data: self.data["connections"] = []
 
     # --- 辅助计算 ---
-
     def get_component_list_sorted(self):
         comps = []
         for name, info in self.data["components"].items():
@@ -54,115 +60,95 @@ class SystemBlockViz:
         proj_y = y1 + t * (y2-y1)
         return self._dist(px, py, proj_x, proj_y)
 
-    # --- 核心：命中检测 (Hit Test) ---
-
+    # --- 命中检测 (调整了阈值，让外部端口更容易被点中) ---
     def hit_test(self, x, y):
-        # 1. 优先级最高：连接网络中心点 (点击这里代表选中整个网络)
+        # 1. 连接中心点
         for idx, conn in enumerate(self.data["connections"]):
             center = self.get_connection_centroid(idx)
             if center and self._dist(x, y, center[0], center[1]) < 8:
                 return {"type": "conn_center", "index": idx}
         
-        # 2. 优先级次之：端口 (点)
+        # 2. 端口 (优先级调高，阈值调大到 10px)
         for name, info in self.data["external_ports"].items():
-            if self._dist(x, y, info["coord"][0], info["coord"][1]) < 8:
+            if self._dist(x, y, info["coord"][0], info["coord"][1]) < 10: 
                 return {"type": "port", "comp": "external", "port": name}
+        
         for comp_name, comp_info in self.data["components"].items():
             for p in comp_info["ports"]:
-                if self._dist(x, y, p["coord"][0], p["coord"][1]) < 6:
+                if self._dist(x, y, p["coord"][0], p["coord"][1]) < 8:
                      return {"type": "port", "comp": comp_name, "port": p["name"]}
 
-        # 3. 优先级第三：具体的连线分支 (点击这里代表选中这一根线)
+        # 3. 连线分支
         for idx, conn in enumerate(self.data["connections"]):
             center = self.get_connection_centroid(idx)
             if not center: continue
-            
             for node in conn["nodes"]:
                 p_coord = self.get_port_coord(node["component"], node["port"])
                 if p_coord:
-                    # 判断点到线段的距离
                     if self._dist_point_to_segment(x, y, p_coord[0], p_coord[1], center[0], center[1]) < 5:
-                        # 返回选中的具体是哪一个节点(分支)
-                        return {
-                            "type": "conn_edge", 
-                            "index": idx, 
-                            "node": node # {'component': 'R1', 'port': 'Pos'}
-                        }
-
-        # 4. 优先级最低：组件框
+                        return {"type": "conn_edge", "index": idx, "node": node}
+        
+        # 4. 组件
         sorted_comps = self.get_component_list_sorted()
         for item in sorted_comps:
             box = item["info"]["box"]
             bx1, by1, bx2, by2 = min(box[0], box[2]), min(box[1], box[3]), max(box[0], box[2]), max(box[1], box[3])
             if bx1 <= x <= bx2 and by1 <= y <= by2:
                 return {"type": "component", "name": item["name"]}
-        
         return None
 
-    # --- 修改逻辑 (CRUD) ---
-
+    # --- CRUD (保持不变) ---
     def add_component(self, name, c_type, box):
-        if name in self.data["components"] or name in self.data["external_ports"]:
-            return False, "名字已存在"
+        if name in self.data["components"] or name in self.data["external_ports"]: return False, "名字已存在"
         self.data["components"][name] = {
             "type": c_type,
             "box": [min(box[0], box[2]), min(box[1], box[3]), max(box[0], box[2]), max(box[1], box[3])],
             "ports": []
         }
-        return True, "成功"
+        return True, ""
     
     def rename_component(self, old_name, new_name):
         if old_name == new_name: return True, ""
-        if new_name in self.data["components"] or new_name in self.data["external_ports"]:
-            return False, "新名字已存在"
-        
+        if new_name in self.data["components"] or new_name in self.data["external_ports"]: return False, "新名字已存在"
         comp_data = self.data["components"].pop(old_name)
         self.data["components"][new_name] = comp_data
-        
-        # 更新连接引用
         for conn in self.data["connections"]:
             for node in conn["nodes"]:
-                if node["component"] == old_name:
-                    node["component"] = new_name
+                if node["component"] == old_name: node["component"] = new_name
         return True, ""
 
     def update_component_type(self, name, new_type):
         if name in self.data["components"]:
             self.data["components"][name]["type"] = new_type
-            return True
-        return False
 
     def delete_component(self, name):
         if name in self.data["components"]:
             del self.data["components"][name]
             self._cleanup_connections(name, None)
-            return True
-        return False
 
     def add_port(self, comp_name, port_name, port_type, coord):
         if comp_name == "external":
-            if port_name in self.data["external_ports"]: return False, "外部端口重名"
+            if port_name in self.data["external_ports"]: return False, "重名"
             self.data["external_ports"][port_name] = {"type": port_type, "coord": [int(coord[0]), int(coord[1])]}
         else:
             ports = self.data["components"][comp_name]["ports"]
             for p in ports:
-                if p["name"] == port_name: return False, "组件内端口重名"
+                if p["name"] == port_name: return False, "重名"
             ports.append({"name": port_name, "coord": [int(coord[0]), int(coord[1])]})
         return True, ""
     
     def rename_port(self, comp_name, old_port_name, new_port_name):
         if old_port_name == new_port_name: return True, ""
         if comp_name == "external":
-            if new_port_name in self.data["external_ports"]: return False, "端口重名"
+            if new_port_name in self.data["external_ports"]: return False, "重名"
             self.data["external_ports"][new_port_name] = self.data["external_ports"].pop(old_port_name)
         else:
             comp = self.data["components"][comp_name]
             for p in comp["ports"]:
-                if p["name"] == new_port_name: return False, "端口重名"
+                if p["name"] == new_port_name: return False, "重名"
             for p in comp["ports"]:
                 if p["name"] == old_port_name:
-                    p["name"] = new_port_name
-                    break
+                    p["name"] = new_port_name; break
         for conn in self.data["connections"]:
             for node in conn["nodes"]:
                 if node["component"] == comp_name and node["port"] == old_port_name:
@@ -185,17 +171,13 @@ class SystemBlockViz:
         idx_b = self._find_conn_index(node_b)
         target_a = {"component": node_a['comp'], "port": node_a['port']}
         target_b = {"component": node_b['comp'], "port": node_b['port']}
-
         if idx_a is not None and idx_b is not None:
             if idx_a == idx_b: return
             self.data["connections"][idx_a]["nodes"].extend(self.data["connections"][idx_b]["nodes"])
             del self.data["connections"][idx_b]
-        elif idx_a is not None:
-            self.data["connections"][idx_a]["nodes"].append(target_b)
-        elif idx_b is not None:
-            self.data["connections"][idx_b]["nodes"].append(target_a)
-        else:
-            self.data["connections"].append({"nodes": [target_a, target_b], "points": []})
+        elif idx_a is not None: self.data["connections"][idx_a]["nodes"].append(target_b)
+        elif idx_b is not None: self.data["connections"][idx_b]["nodes"].append(target_a)
+        else: self.data["connections"].append({"nodes": [target_a, target_b], "points": []})
 
     def add_to_connection(self, conn_idx, node_struct):
         target = {"component": node_struct['comp'], "port": node_struct['port']}
@@ -204,22 +186,12 @@ class SystemBlockViz:
         self.data["connections"][conn_idx]["nodes"].append(target)
 
     def delete_connection_node(self, conn_idx, node_struct=None):
-        """
-        核心删除逻辑：
-        - 如果 node_struct 不为空，只移除该节点。剩余节点会自动导致下次 get_centroid 变化。
-        - 如果 node_struct 为空，删除整个 connection。
-        """
         if node_struct is None:
             del self.data["connections"][conn_idx]
             return
-        
         conn = self.data["connections"][conn_idx]
-        # 过滤掉指定的 node
         conn["nodes"] = [n for n in conn["nodes"] if not (n["component"] == node_struct['component'] and n["port"] == node_struct['port'])]
-        
-        # 如果剩下少于2个点，连接就没有意义了，删掉
-        if len(conn["nodes"]) < 2:
-            del self.data["connections"][conn_idx]
+        if len(conn["nodes"]) < 2: del self.data["connections"][conn_idx]
 
     def _find_conn_index(self, node_struct):
         for i, conn in enumerate(self.data["connections"]):
