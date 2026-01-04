@@ -14,7 +14,6 @@ class SystemBlockViz:
     # --- 辅助计算 ---
 
     def get_component_list_sorted(self):
-        """按面积从小到大排序"""
         comps = []
         for name, info in self.data["components"].items():
             box = info["box"]
@@ -47,7 +46,6 @@ class SystemBlockViz:
         return math.sqrt((x1-x2)**2 + (y1-y2)**2)
 
     def _dist_point_to_segment(self, px, py, x1, y1, x2, y2):
-        """计算点(px,py)到线段(x1,y1)-(x2,y2)的最短距离"""
         l2 = (x1-x2)**2 + (y1-y2)**2
         if l2 == 0: return self._dist(px, py, x1, y1)
         t = ((px-x1)*(x2-x1) + (py-y1)*(y2-y1)) / l2
@@ -59,7 +57,7 @@ class SystemBlockViz:
     # --- 核心：命中检测 (Hit Test) ---
 
     def hit_test(self, x, y):
-        # 1. 优先级最高：连接中心点
+        # 1. 优先级最高：连接网络中心点 (点击这里代表选中整个网络)
         for idx, conn in enumerate(self.data["connections"]):
             center = self.get_connection_centroid(idx)
             if center and self._dist(x, y, center[0], center[1]) < 8:
@@ -74,19 +72,24 @@ class SystemBlockViz:
                 if self._dist(x, y, p["coord"][0], p["coord"][1]) < 6:
                      return {"type": "port", "comp": comp_name, "port": p["name"]}
 
-        # 3. 优先级第三：连接线段 (星形连接线)
-        # 即使线在大框里，这里先检测到线，就能选中连接
+        # 3. 优先级第三：具体的连线分支 (点击这里代表选中这一根线)
         for idx, conn in enumerate(self.data["connections"]):
             center = self.get_connection_centroid(idx)
             if not center: continue
+            
             for node in conn["nodes"]:
                 p_coord = self.get_port_coord(node["component"], node["port"])
                 if p_coord:
-                    # 计算点到线段距离，阈值设为 4px
+                    # 判断点到线段的距离
                     if self._dist_point_to_segment(x, y, p_coord[0], p_coord[1], center[0], center[1]) < 5:
-                        return {"type": "conn_center", "index": idx} # 选中该连接网络
+                        # 返回选中的具体是哪一个节点(分支)
+                        return {
+                            "type": "conn_edge", 
+                            "index": idx, 
+                            "node": node # {'component': 'R1', 'port': 'Pos'}
+                        }
 
-        # 4. 优先级最低：组件框 (按面积从小到大)
+        # 4. 优先级最低：组件框
         sorted_comps = self.get_component_list_sorted()
         for item in sorted_comps:
             box = item["info"]["box"]
@@ -113,11 +116,10 @@ class SystemBlockViz:
         if new_name in self.data["components"] or new_name in self.data["external_ports"]:
             return False, "新名字已存在"
         
-        # 1. 迁移数据
         comp_data = self.data["components"].pop(old_name)
         self.data["components"][new_name] = comp_data
         
-        # 2. 更新所有连接中的引用
+        # 更新连接引用
         for conn in self.data["connections"]:
             for node in conn["nodes"]:
                 if node["component"] == old_name:
@@ -150,22 +152,17 @@ class SystemBlockViz:
     
     def rename_port(self, comp_name, old_port_name, new_port_name):
         if old_port_name == new_port_name: return True, ""
-        
         if comp_name == "external":
             if new_port_name in self.data["external_ports"]: return False, "端口重名"
             self.data["external_ports"][new_port_name] = self.data["external_ports"].pop(old_port_name)
         else:
             comp = self.data["components"][comp_name]
-            # 检查重名
             for p in comp["ports"]:
                 if p["name"] == new_port_name: return False, "端口重名"
-            # 修改名字
             for p in comp["ports"]:
                 if p["name"] == old_port_name:
                     p["name"] = new_port_name
                     break
-        
-        # 更新连接
         for conn in self.data["connections"]:
             for node in conn["nodes"]:
                 if node["component"] == comp_name and node["port"] == old_port_name:
@@ -207,11 +204,20 @@ class SystemBlockViz:
         self.data["connections"][conn_idx]["nodes"].append(target)
 
     def delete_connection_node(self, conn_idx, node_struct=None):
+        """
+        核心删除逻辑：
+        - 如果 node_struct 不为空，只移除该节点。剩余节点会自动导致下次 get_centroid 变化。
+        - 如果 node_struct 为空，删除整个 connection。
+        """
         if node_struct is None:
             del self.data["connections"][conn_idx]
             return
+        
         conn = self.data["connections"][conn_idx]
-        conn["nodes"] = [n for n in conn["nodes"] if not (n["component"] == node_struct['comp'] and n["port"] == node_struct['port'])]
+        # 过滤掉指定的 node
+        conn["nodes"] = [n for n in conn["nodes"] if not (n["component"] == node_struct['component'] and n["port"] == node_struct['port'])]
+        
+        # 如果剩下少于2个点，连接就没有意义了，删掉
         if len(conn["nodes"]) < 2:
             del self.data["connections"][conn_idx]
 
