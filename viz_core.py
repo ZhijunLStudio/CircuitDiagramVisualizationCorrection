@@ -6,6 +6,8 @@ class SystemBlockViz:
     def __init__(self, json_data):
         self.data = json_data if isinstance(json_data, dict) else json.loads(json_data)
         self.ensure_structure()
+        # --- 核心新增：初始化时自动清洗无效连接 ---
+        self.validate_connections()
 
     def clone_data(self):
         return copy.deepcopy(self.data)
@@ -18,6 +20,45 @@ class SystemBlockViz:
         if "external_ports" not in self.data: self.data["external_ports"] = {}
         if "connections" not in self.data: self.data["connections"] = []
 
+    # --- 数据清洗与验证 ---
+    def validate_connections(self):
+        """
+        遍历所有连接，移除引用了不存在组件或端口的节点。
+        如果清洗后某条连接的节点数 < 2，则移除整条连接。
+        """
+        valid_connections = []
+        
+        for conn in self.data["connections"]:
+            valid_nodes = []
+            for node in conn.get("nodes", []):
+                c_name = node["component"]
+                p_name = node["port"]
+                is_valid = False
+                
+                # 检查节点有效性
+                if c_name == "external":
+                    # 检查外部端口是否存在
+                    if p_name in self.data["external_ports"]:
+                        is_valid = True
+                elif c_name in self.data["components"]:
+                    # 检查组件是否存在，且端口是否在组件的端口列表中
+                    comp_ports = self.data["components"][c_name].get("ports", [])
+                    # 遍历组件的所有端口寻找匹配
+                    if any(p["name"] == p_name for p in comp_ports):
+                        is_valid = True
+                
+                if is_valid:
+                    valid_nodes.append(node)
+                # else: print(f"自动剔除无效节点: {c_name} -> {p_name}")
+            
+            # 只有当有效节点数 >= 2 时，保留该连接
+            if len(valid_nodes) >= 2:
+                conn["nodes"] = valid_nodes
+                valid_connections.append(conn)
+            # else: print("自动剔除无效连接 (节点不足)")
+
+        self.data["connections"] = valid_connections
+
     # --- 辅助计算 ---
     def get_component_list_sorted(self):
         comps = []
@@ -28,6 +69,7 @@ class SystemBlockViz:
         return sorted(comps, key=lambda x: x["area"])
 
     def get_connection_centroid(self, conn_idx):
+        if conn_idx >= len(self.data["connections"]): return None
         conn = self.data["connections"][conn_idx]
         if not conn["nodes"]: return None
         sum_x, sum_y, count = 0, 0, 0
@@ -60,24 +102,23 @@ class SystemBlockViz:
         proj_y = y1 + t * (y2-y1)
         return self._dist(px, py, proj_x, proj_y)
 
-    # --- 命中检测 (调整了阈值，让外部端口更容易被点中) ---
+    # --- 命中检测 ---
     def hit_test(self, x, y):
-        # 1. 连接中心点
-        for idx, conn in enumerate(self.data["connections"]):
-            center = self.get_connection_centroid(idx)
-            if center and self._dist(x, y, center[0], center[1]) < 8:
-                return {"type": "conn_center", "index": idx}
-        
-        # 2. 端口 (优先级调高，阈值调大到 10px)
+        # 1. 端口 (优先)
         for name, info in self.data["external_ports"].items():
             if self._dist(x, y, info["coord"][0], info["coord"][1]) < 10: 
                 return {"type": "port", "comp": "external", "port": name}
-        
         for comp_name, comp_info in self.data["components"].items():
             for p in comp_info["ports"]:
                 if self._dist(x, y, p["coord"][0], p["coord"][1]) < 8:
                      return {"type": "port", "comp": comp_name, "port": p["name"]}
 
+        # 2. 连接中心
+        for idx, conn in enumerate(self.data["connections"]):
+            center = self.get_connection_centroid(idx)
+            if center and self._dist(x, y, center[0], center[1]) < 8:
+                return {"type": "conn_center", "index": idx}
+        
         # 3. 连线分支
         for idx, conn in enumerate(self.data["connections"]):
             center = self.get_connection_centroid(idx)
@@ -97,7 +138,7 @@ class SystemBlockViz:
                 return {"type": "component", "name": item["name"]}
         return None
 
-    # --- CRUD (保持不变) ---
+    # --- CRUD ---
     def add_component(self, name, c_type, box):
         if name in self.data["components"] or name in self.data["external_ports"]: return False, "名字已存在"
         self.data["components"][name] = {
