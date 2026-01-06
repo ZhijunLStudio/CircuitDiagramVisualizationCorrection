@@ -424,7 +424,7 @@ def main():
                 ref_img = ui.image().classes('w-full rounded hidden')
                 app_state["ui"]["ref_img"] = ref_img
 
-    ui.run(title='Circuit Labeler Pro', port=8080)
+    ui.run(title='Circuit Labeler Pro', port=8085)
 
 if __name__ in {"__main__", "__mp_main__"}:
     main()

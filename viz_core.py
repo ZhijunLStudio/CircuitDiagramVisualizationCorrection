@@ -141,9 +141,15 @@ class SystemBlockViz:
     # --- CRUD ---
     def add_component(self, name, c_type, box):
         if name in self.data["components"] or name in self.data["external_ports"]: return False, "名字已存在"
+        
+        # --- 修改点：强制转 int ---
+        x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
+        real_box = [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)]
+        # ------------------------
+        
         self.data["components"][name] = {
             "type": c_type,
-            "box": [min(box[0], box[2]), min(box[1], box[3]), max(box[0], box[2]), max(box[1], box[3])],
+            "box": real_box,
             "ports": []
         }
         return True, ""
